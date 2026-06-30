@@ -27,11 +27,13 @@ LED_MAP = {
     "led_b": "/sys/class/leds/led_b/brightness",
 }
 
-MAX_FREQUENCY = 5000
-MAX_TONE_DURATION_MS = 1000
+MAX_FREQUENCY = 2000
+MAX_TONE_DURATION_MS = 60000
+MAX_SONG_DURATION_SEC = 120
 
 process_lock = threading.RLock()
 tone_process = None
+tone_start_time = 0
 
 
 def json_bytes(payload):
@@ -79,8 +81,11 @@ def stop_tone_locked():
     tone_process = None
 
     if process is not None and process.poll() is None:
-        process.terminate()
-        if not _wait_with_timeout(process, 1.0):
+        try:
+            process.terminate()
+        except Exception:
+            pass
+        if not _wait_with_timeout(process, 2.0):
             try:
                 process.kill()
                 _wait_with_timeout(process, 1.0)
@@ -94,10 +99,14 @@ def stop_tone_locked():
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                close_fds=True,
             )
-            _wait_with_timeout(proc, 2.0)
+            _wait_with_timeout(proc, 3.0)
             if proc.poll() is None:
-                proc.kill()
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -110,7 +119,12 @@ def stop_tone():
 def reap_process(process):
     global tone_process
     try:
-        process.wait()
+        _wait_with_timeout(process, MAX_SONG_DURATION_SEC)
+        if process.poll() is None:
+            try:
+                process.kill()
+            except Exception:
+                pass
     finally:
         with process_lock:
             if tone_process is process:
@@ -118,7 +132,7 @@ def reap_process(process):
 
 
 def start_process(args):
-    global tone_process
+    global tone_process, tone_start_time
 
     with process_lock:
         stop_tone_locked()
@@ -133,6 +147,7 @@ def start_process(args):
         )
 
         tone_process = process
+        tone_start_time = time.time()
 
         thread = threading.Thread(
             target=reap_process,
@@ -235,6 +250,20 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             path = self.route_path()
+
+            if path == "/" or path == "/index.html":
+                index_file = os.path.join(PROJECT_DIR, "index.html")
+                if os.path.isfile(index_file):
+                    with open(index_file, "rb") as f:
+                        body = f.read()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                else:
+                    self.send_json(404, {"ok": False, "error": "index.html not found"})
+                return
 
             if path == "/health":
                 data = {
@@ -348,6 +377,25 @@ def handle_shutdown(signum, frame):
     raise KeyboardInterrupt
 
 
+def watchdog_loop():
+    while True:
+        time.sleep(10)
+        with process_lock:
+            process = tone_process
+            if process is not None and process.poll() is None:
+                elapsed = time.time() - tone_start_time
+                if elapsed > MAX_SONG_DURATION_SEC:
+                    sys.stdout.write(
+                        "watchdog: killing stuck process (pid=%d, elapsed=%.0fs)\n"
+                        % (process.pid, elapsed)
+                    )
+                    sys.stdout.flush()
+                    try:
+                        process.kill()
+                    except Exception:
+                        pass
+
+
 def main():
     if os.geteuid() != 0:
         sys.exit("This service must run as root")
@@ -359,6 +407,10 @@ def main():
 
     signal.signal(signal.SIGTERM, handle_shutdown)
     signal.signal(signal.SIGINT, handle_shutdown)
+
+    watchdog = threading.Thread(target=watchdog_loop)
+    watchdog.daemon = True
+    watchdog.start()
 
     server = HTTPServer((HOST, PORT), Handler)
     server.daemon_threads = True
