@@ -16,3 +16,36 @@ Thumbs.db
 # MiMo Code 内部配置
 .mimocode/node_modules/
 .mimocode/package-lock.json
+
+# AI/session/private artifacts
+.mimocode/
+session-*.md
+repair-baseline-*.log
+repair-report-*.md
+*.local
+.env.*
+!.env.example
+# Credentials and keys
+id_rsa*
+id_ed25519*
+# Media and generated audio
+input.mp4
+output.aac
+*.wav
+*.mp3
+*.m4a
+# Python
+*.py[cod]
+.venv/
+venv/
+# Node / Next.js
+node_modules/
+.next/
+out/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+# OS/editor
+.vscode/
+.idea/
