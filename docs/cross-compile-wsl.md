@@ -1,6 +1,7 @@
 # Cross-Compile `tone3` From WSL
 
-The Z-turn Board V2 runs a 32-bit ARM hard-float Linux userland. The existing
+The MYIR Z-turn XC7Z020 board runs a 32-bit ARM hard-float Linux userland. The
+exact PCB revision is not confirmed. The existing
 `/root/project/tone3` binary reports:
 
 ```text

@@ -1,0 +1,14 @@
+﻿RTL lint validation
+===================
+
+Tool availability:
+- `iverilog` is not installed in Windows PATH.
+- `verilator` is not installed in Windows PATH.
+- WSL did not report usable `iverilog` or `verilator` paths.
+- Attempted WSL installation together with `device-tree-compiler`, but
+  `sudo apt update` did not complete before timeout and was stopped.
+
+Result:
+- RTL lint was not run.
+- Static review confirmed `vivado/rtl/axi_selftest.v` has no external BP/P18/buzzer output port.
+- Static review confirmed `fpga/axi_buzzer_pwm/rtl/axi_buzzer_pwm.v` gates PWM with `period_reg >= 2`, `duty_reg != 0`, and `duty_reg < period_reg`.

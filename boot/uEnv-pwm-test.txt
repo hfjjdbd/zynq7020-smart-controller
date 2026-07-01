@@ -1,0 +1,12 @@
+# PWM boot variables.
+# This file is NOT intended to replace /media/boot/uEnv.txt automatically.
+# Use only after AXI self-test passes and the user confirms the PWM risk.
+#
+# IMPORTANT: do not use mmc_loadbit_fat here. That macro calls
+# get_bitstream_name and can select 7z020.bit instead of the test file.
+
+bootargs=console=ttyPS0,115200 root=/dev/mmcblk0p2 rw earlyprintk rootfstype=ext4 rootwait devtmpfs.mount=0
+test_bitstream=7z020-pwm-test.bit
+test_devicetree=devicetree-pwm-test.dtb
+test_bootcmd=mmcinfo && fatload mmc 0 ${loadbit_addr} ${test_bitstream} && fpga loadb 0 ${loadbit_addr} ${filesize} && fatload mmc 0 ${kernel_load_address} ${kernel_image} && fatload mmc 0 ${devicetree_load_address} ${test_devicetree} && bootm ${kernel_load_address} - ${devicetree_load_address}
+uenvcmd=echo REQUIRES USER CONFIRMATION

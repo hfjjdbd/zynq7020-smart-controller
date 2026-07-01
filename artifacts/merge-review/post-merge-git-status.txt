@@ -1,0 +1,15 @@
+﻿## codex/fpga-reviewed-merge-20260701-204846
+ M docs/cross-compile-wsl.md
+ M docs/github-open-source-notes.md
+ M docs/vivado-beginner-fpga-pwm.md
+ M fpga/axi_buzzer_pwm/README.md
+ M fpga/axi_buzzer_pwm/rtl/axi_buzzer_pwm.v
+?? .merge_backup_dir
+?? .merge_branch
+?? artifacts/
+?? boot/
+?? device-tree/
+?? docs/vivado-dtb-next-step-review.md
+?? linux/
+?? vivado/
+?? "\345\217\202\350\200\203\350\265\204\346\226\231/"

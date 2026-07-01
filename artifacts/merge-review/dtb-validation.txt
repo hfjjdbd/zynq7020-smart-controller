@@ -1,0 +1,26 @@
+﻿DTS/DTB validation
+==================
+
+Tool availability:
+- Windows PowerShell `dtc` resolves to an unrelated PowerShell command, not device-tree-compiler.
+- WSL did not report a usable `dtc` path.
+- Attempted `sudo apt update && sudo apt install -y device-tree-compiler iverilog`
+  in WSL, but `sudo apt update` did not complete before timeout and was stopped.
+
+Result:
+- DTS -> DTB compile was not rerun locally because device-tree-compiler is not installed.
+- Reviewed project provided full DTS and DTB files derived from the board's real devicetree.dtb.
+- Static checks passed for required nodes/properties:
+  - devicetree-axi-selftest.dts contains /amba/gpio-beep status = "disabled".
+  - devicetree-axi-selftest.dts contains /amba/logiclk@43c00000 status = "disabled".
+  - devicetree-axi-selftest.dts contains /amba/logicvc@43c10000 status = "disabled".
+  - devicetree-axi-selftest.dts contains /amba/axi-selftest@43c20000 compatible = "myir,axi-selftest-1.0".
+  - devicetree-pwm-test.dts contains /amba/gpio-beep status = "disabled".
+  - devicetree-pwm-test.dts contains /amba/logiclk@43c00000 status = "disabled".
+  - devicetree-pwm-test.dts contains /amba/logicvc@43c10000 status = "disabled".
+  - devicetree-pwm-test.dts contains /amba/axi-buzzer-pwm@43c20000 compatible = "myir,axi-buzzer-pwm-1.0".
+
+DTB SHA256:
+- devicetree-original.dtb f538153c406bea1c0aea624ca5672bfe3e38628b59d504543d367257a4ffa7ea
+- devicetree-axi-selftest.dtb 20b2287df77e4b75c2f13e72bd7de39af096800b3ace7520fb250d0cfbc97eec
+- devicetree-pwm-test.dtb 5b484e16e7be32e4f3252eb7b4168b6ffa3991ea2ac92c94e346f55644d4731b

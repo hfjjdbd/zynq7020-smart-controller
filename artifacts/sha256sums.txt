@@ -1,0 +1,3 @@
+f538153c406bea1c0aea624ca5672bfe3e38628b59d504543d367257a4ffa7ea  device-tree/devicetree-original.dtb
+20b2287df77e4b75c2f13e72bd7de39af096800b3ace7520fb250d0cfbc97eec  device-tree/devicetree-axi-selftest.dtb
+5b484e16e7be32e4f3252eb7b4168b6ffa3991ea2ac92c94e346f55644d4731b  device-tree/devicetree-pwm-test.dtb

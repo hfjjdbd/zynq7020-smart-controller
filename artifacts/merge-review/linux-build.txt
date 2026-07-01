@@ -1,0 +1,12 @@
+﻿Linux tool build validation
+===========================
+
+Local Windows/WSL GCC:
+- `gcc` is not installed in Windows PATH.
+- WSL did not report a usable `gcc` path.
+
+Board compile only, no execution:
+- /tmp/axi_selftest_merge built with board GCC 4.6.3 using `gcc -std=gnu99 -Wall -Wextra -O2`.
+- /tmp/pwm_test_merge built with board GCC 4.6.3 using `gcc -std=gnu99 -Wall -Wextra -O2 -lrt`.
+
+No `/dev/mem` access was performed. No buzzer test was run.

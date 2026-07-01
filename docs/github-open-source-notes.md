@@ -49,7 +49,7 @@ For this board, the known-good path remains:
 
 ```text
 copy new .bit to /media/boot under a new name
-load temporarily with /dev/xdevcfg
+boot through a separate U-Boot test path with a matching DTB
 test AXI PWM with a short tone
 only then update boot configuration
 ```

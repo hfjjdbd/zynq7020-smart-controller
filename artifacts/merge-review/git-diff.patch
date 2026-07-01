@@ -1,0 +1,361 @@
+﻿diff --git a/docs/cross-compile-wsl.md b/docs/cross-compile-wsl.md
+index 88c2990..46f54f0 100644
+--- a/docs/cross-compile-wsl.md
++++ b/docs/cross-compile-wsl.md
+@@ -1,6 +1,7 @@
+ # Cross-Compile `tone3` From WSL
+ 
+-The Z-turn Board V2 runs a 32-bit ARM hard-float Linux userland. The existing
++The MYIR Z-turn XC7Z020 board runs a 32-bit ARM hard-float Linux userland. The
++exact PCB revision is not confirmed. The existing
+ `/root/project/tone3` binary reports:
+ 
+ ```text
+diff --git a/docs/github-open-source-notes.md b/docs/github-open-source-notes.md
+index e78b12a..6f3be86 100644
+--- a/docs/github-open-source-notes.md
++++ b/docs/github-open-source-notes.md
+@@ -49,7 +49,7 @@ For this board, the known-good path remains:
+ 
+ ```text
+ copy new .bit to /media/boot under a new name
+-load temporarily with /dev/xdevcfg
++boot through a separate U-Boot test path with a matching DTB
+ test AXI PWM with a short tone
+ only then update boot configuration
+ ```
+diff --git a/docs/vivado-beginner-fpga-pwm.md b/docs/vivado-beginner-fpga-pwm.md
+index ee3c8dd..3de8dbe 100644
+--- a/docs/vivado-beginner-fpga-pwm.md
++++ b/docs/vivado-beginner-fpga-pwm.md
+@@ -18,16 +18,26 @@ Web page
+   -> Python server
+   -> tone3
+   -> AXI-Lite registers
+-  -> FPGA PWM
+-  -> buzzer
++  -> AXI self-test first
++  -> FPGA PWM later
++  -> buzzer only after board identity/risk is accepted
+ ```
+ 
+-The FPGA block has only three software-visible registers:
++The self-test block comes first and has these registers:
++
++```text
++0x00 SCRATCH read/write
++0x04 ID      read-only 0x50574D31
++0x08 COUNTER continuously changing
++```
++
++The later PWM block has these software-visible registers:
+ 
+ ```text
+ 0x00 CONTROL  bit0 enable
+ 0x04 PERIOD   clock cycles per waveform period
+ 0x08 DUTY     high-level clock cycles
++0x0C ID       read-only 0x425A5057
+ ```
+ 
+ For a 100 MHz FPGA clock and 440 Hz tone:
+@@ -66,12 +76,12 @@ That is much easier to debug on Zynq.
+ Use the exact part for the board:
+ 
+ ```text
+-XC7Z020-2CLG400
++xc7z020clg400-2
+ ```
+ 
+-If you already have an official MYIR/Z-turn Vivado project, use that first. It
+-is safer than creating a board design from nothing because DDR, clocks, Ethernet,
+-SD card, UART, and the existing PL routes are already configured.
++Do not select a MYIR V2 board preset. The exact PCB revision is not confirmed.
++The current plan keeps the working `BOOT.bin`/FSBL and only generates a new PL
++bitstream plus a matching test DTB.
+ 
+ ### 2. Create A Block Design
+ 
+@@ -93,7 +103,15 @@ Run:
+ Run Block Automation
+ ```
+ 
+-This configures the basic PS side.
++Only enable the minimum PL path needed for AXI access:
++
++```text
++M_AXI_GP0 enabled
++FCLK_CLK0 enabled
++FCLK_RESET0_N enabled
++```
++
++Do not generate a new FSBL or replace `BOOT.bin`.
+ 
+ ### 3. Enable AXI GP0
+ 
+@@ -107,12 +125,12 @@ PS-PL Configuration -> AXI Non Secure Enablement -> GP Master AXI Interface -> M
+ 
+ This lets ARM/Linux write registers inside PL.
+ 
+-### 4. Add The PWM RTL
++### 4. Add The AXI Self-Test RTL First
+ 
+ Add this source file to Vivado:
+ 
+ ```text
+-fpga/axi_buzzer_pwm/rtl/axi_buzzer_pwm.v
++vivado/rtl/axi_selftest.v
+ ```
+ 
+ Then choose one of these paths:
+@@ -137,8 +155,8 @@ Mode: Slave
+ Number of registers: 3
+ ```
+ 
+-Then replace the generated user logic with `axi_buzzer_pwm.v`, or instantiate
+-`axi_buzzer_pwm` from inside the generated wrapper.
++Then replace the generated user logic with `axi_selftest.v`, or instantiate
++`axi_selftest` from inside the generated wrapper.
+ 
+ ### 5. Connect AXI
+ 
+@@ -147,7 +165,7 @@ In the block design:
+ ```text
+ ZYNQ7 M_AXI_GP0
+   -> AXI Interconnect
+-  -> axi_buzzer_pwm S_AXI
++  -> axi_selftest S_AXI
+ ```
+ 
+ Vivado can usually add the AXI interconnect automatically when you run:
+@@ -164,7 +182,7 @@ Open:
+ Address Editor
+ ```
+ 
+-Set the PWM IP base address to:
++Set the self-test IP base address to:
+ 
+ ```text
+ 0x43C20000
+@@ -177,30 +195,21 @@ matching value:
+ TONE3_PWM_BASE=0xYOUR_ADDRESS
+ ```
+ 
+-### 7. Connect The Buzzer Output
+-
+-This is the only board-specific part.
+-
+-Your running Linux device tree says the old buzzer uses GPIO 117:
+-
+-```text
+-gpio-beep gpios = 0x75
+-```
+-
+-On Zynq PS GPIO, GPIO 117 corresponds to:
++### 7. Do Not Connect The Buzzer Yet
+ 
+-```text
+-EMIO[63]
+-```
++The first bitstream must not connect to P18 or the buzzer. It should contain
++only the Zynq PS, AXI interconnect, and the self-test AXI registers. It should
++not include the old display IP.
+ 
+-So do not guess a random package pin. The safest goal is:
++The candidate later buzzer constraint is:
+ 
+-```text
+-axi_buzzer_pwm pwm_out -> the old PL path that drove EMIO[63]/GPIO117 buzzer
++```tcl
++set_property PACKAGE_PIN P18 [get_ports BP]
++set_property IOSTANDARD LVCMOS33 [get_ports BP]
+ ```
+ 
+-If you use the official MYIR project, look for the existing buzzer or GPIO117
+-connection and replace that signal with `pwm_out`.
++Treat that as unconfirmed until the board photos or manual risk acceptance
++settle the hardware identity.
+ 
+ ### 8. Generate Bitstream
+ 
+@@ -213,7 +222,7 @@ Generate Bitstream
+ Export a new bitstream with a safe name:
+ 
+ ```text
+-7z020-pwm-test.bit
++7z020-axi-selftest.bit
+ ```
+ 
+ Do not overwrite the known working:
+@@ -224,26 +233,37 @@ Do not overwrite the known working:
+ 
+ ## No-JTAG Load And Test
+ 
+-Copy the bitstream:
++Do not online-replace the whole PL from running Linux. The current Linux has
++`logicvc` framebuffer drivers bound to old PL display IP, so this is unsafe:
+ 
+ ```sh
+-cat 7z020-pwm-test.bit | ssh root@192.168.1.100 'cat > /media/boot/7z020-pwm-test.bit'
++cat new.bit > /dev/xdevcfg
+ ```
+ 
+-Load it temporarily:
++The safer no-JTAG flow is:
+ 
+-```sh
+-ssh root@192.168.1.100 'cat /media/boot/7z020-pwm-test.bit > /dev/xdevcfg'
++```text
++old BOOT.bin
++  -> U-Boot
++  -> load 7z020-axi-selftest.bit
++  -> load devicetree-axi-selftest.dtb
++  -> boot Linux
+ ```
+ 
+-Test a short tone:
++The test DTB must disable:
+ 
+-```sh
+-ssh root@192.168.1.100 'cd /root/project && TONE3_BACKEND=axi TONE3_PWM_BASE=0x43c20000 TONE3_PWM_CLK_HZ=100000000 ./tone3 440 150'
++```text
++logiclk@43c00000
++logicvc@43c10000
++gpio-beep
+ ```
+ 
+-If it does not work, reboot the board. Because this is a temporary load, reboot
+-returns to the SD card boot configuration.
++Any copy to `/media/boot`, boot-item switch, or reboot requires explicit user
++confirmation first.
++
++After the self-test boot succeeds, compile and run `linux/axi_selftest.c` on the
++board. Only after scratch readback, ID `0x50574D31`, and counter movement pass
++should you generate the PWM bitstream and run a short PWM test.
+ 
+ ## What To Ignore For Now
+ 
+diff --git a/fpga/axi_buzzer_pwm/README.md b/fpga/axi_buzzer_pwm/README.md
+index af65506..3bc9769 100644
+--- a/fpga/axi_buzzer_pwm/README.md
++++ b/fpga/axi_buzzer_pwm/README.md
+@@ -1,15 +1,20 @@
+ # AXI Buzzer PWM
+ 
+-This directory contains the first FPGA-side step for the `FPGA` branch: a
+-small AXI4-Lite controlled PWM block for the Z-turn Board V2 buzzer.
++This directory contains the FPGA-side PWM block for the `FPGA` branch. The
++target is a MYIR Z-turn XC7Z020 board, but the exact PCB revision is not
++confirmed.
+ 
+ If you are new to Vivado, start with `docs/vivado-beginner-fpga-pwm.md`.
+ 
+ The current working board runs Xillinux/Ubuntu 12.04 and exposes the buzzer as
+ Linux GPIO 117. The live device tree shows the old `gpio-beep` node using GPIO
+-`0x75` (117), which is the PS GPIO EMIO path. Do not guess a package pin for the
+-buzzer. In Vivado, connect `pwm_out` to the same PL signal path that previously
+-fed EMIO[63]/GPIO117 for the buzzer.
++`0x75` (117), which is the PS GPIO EMIO path.
++
++Do not start by driving the buzzer. First build and boot the no-pin
++`axi_selftest` design from `vivado/rtl/axi_selftest.v`. Only after that passes
++should PWM be tested. Treat `BP/P18/LVCMOS33` as a candidate buzzer constraint
++until the physical board revision is confirmed or the risk is explicitly
++accepted.
+ 
+ ## Register Map
+ 
+@@ -20,6 +25,7 @@ Default software base address: `0x43c20000`
+ | `0x00` | CONTROL | bit 0 | `1` enables PWM output, `0` forces output low |
+ | `0x04` | PERIOD | 31:0 | PWM period in PL clock cycles |
+ | `0x08` | DUTY | 31:0 | High time in PL clock cycles |
++| `0x0c` | ID | 31:0 | Read-only `0x425a5057` |
+ 
+ For a 100 MHz PL clock:
+ 
+@@ -43,8 +49,10 @@ duty   = 113636
+ 3. Connect `S_AXI` to Zynq PS `M_AXI_GP0` through an AXI interconnect.
+ 4. Assign the IP base address to `0x43c20000`, or update
+    `TONE3_PWM_BASE` when running `tone3`.
+-5. Drive the board buzzer from `pwm_out` using the existing buzzer PL route.
+-6. Generate a new bitstream under a new filename. Do not overwrite the known
++5. For the self-test stage, do not connect `pwm_out` or any external pin.
++6. For the later PWM stage, drive the board buzzer from `pwm_out` only after
++   board identity and the candidate `BP/P18` constraint are accepted.
++7. Generate a new bitstream under a new filename. Do not overwrite the known
+    working `/media/boot/7z020.bit` until the new design has been tested.
+ 
+ ## Linux Software Path
+@@ -61,9 +69,10 @@ export `TONE3_BACKEND=axi` before launching `web_server.py`.
+ 
+ ## Device Tree Notes
+ 
+-When the PWM bitstream owns the buzzer output, disable or remove the old
+-`gpio-beep` node. Otherwise the Linux gpio-beeper driver may still bind to the
+-old GPIO path and fight the PWM design.
++When the self-test or PWM bitstream removes the old display IP, disable
++`logiclk@43c00000`, `logicvc@43c10000`, and the old `gpio-beep` node in the
++matching test DTB. Otherwise the Linux framebuffer/gpio-beeper drivers may keep
++accessing PL logic that no longer exists.
+ 
+ For a quick `/dev/mem` bring-up path, a dedicated kernel driver is not required.
+ For a cleaner later version, add a device tree node for this IP and use UIO or a
+@@ -71,11 +80,20 @@ small platform driver instead of raw `/dev/mem`.
+ 
+ ## No-JTAG Deployment Notes
+ 
+-The board has `/dev/xdevcfg`, and the SD boot partition is mounted at
+-`/media/boot`. Test new bitstreams with a new filename and keep the original
+-boot files available for rollback. The safe order is:
++The board has `/dev/xdevcfg`, but the running Linux framebuffer driver is bound
++to old PL display IP. Do not online-replace the whole PL with:
++
++```sh
++cat new.bit > /dev/xdevcfg
++```
++
++Test new bitstreams with a new filename and keep the original boot files
++available for rollback. The safe order is:
+ 
+-1. Copy the new bitstream to the boot partition with a unique name.
+-2. Test loading through `/dev/xdevcfg` or a temporary U-Boot setting.
+-3. Verify a short tone with `TONE3_BACKEND=axi`.
+-4. Only then update persistent boot configuration.
++1. Build `7z020-axi-selftest.bit` without external pins or display IP.
++2. Build a matching `devicetree-axi-selftest.dtb` that disables old PL display
++   nodes and `gpio-beep`.
++3. Boot through a U-Boot test path using new filenames.
++4. Verify `linux/axi_selftest.c`: scratch readback, ID `0x50574d31`, and a
++   changing counter.
++5. Only after that, generate and test the PWM bitstream.
+diff --git a/fpga/axi_buzzer_pwm/rtl/axi_buzzer_pwm.v b/fpga/axi_buzzer_pwm/rtl/axi_buzzer_pwm.v
+index 3f24d83..02dd0ef 100644
+--- a/fpga/axi_buzzer_pwm/rtl/axi_buzzer_pwm.v
++++ b/fpga/axi_buzzer_pwm/rtl/axi_buzzer_pwm.v
+@@ -35,6 +35,7 @@ localparam integer ADDR_LSB = 2;
+ localparam integer REG_CONTROL = 0;
+ localparam integer REG_PERIOD = 1;
+ localparam integer REG_DUTY = 2;
++localparam integer REG_ID = 3;
+ 
+ reg [31:0] control_reg;
+ reg [31:0] period_reg;
+@@ -56,7 +57,10 @@ wire [1:0] read_addr;
+ 
+ assign write_fire = aw_seen && w_seen && !s_axi_bvalid;
+ assign read_fire = s_axi_arready && s_axi_arvalid;
+-assign pwm_enable = control_reg[0] && (period_reg != 32'd0) && (duty_reg != 32'd0);
++assign pwm_enable = control_reg[0] &&
++                    (period_reg >= 32'd2) &&
++                    (duty_reg != 32'd0) &&
++                    (duty_reg < period_reg);
+ assign write_addr = axi_awaddr[ADDR_LSB+1:ADDR_LSB];
+ assign read_addr = axi_araddr[ADDR_LSB+1:ADDR_LSB];
+ 
+@@ -175,6 +179,7 @@ always @(posedge s_axi_aclk) begin
+                 REG_CONTROL: s_axi_rdata <= control_reg;
+                 REG_PERIOD: s_axi_rdata <= period_reg;
+                 REG_DUTY: s_axi_rdata <= duty_reg;
++                REG_ID: s_axi_rdata <= 32'h425a5057;
+                 default: s_axi_rdata <= 32'd0;
+             endcase
+         end else if (s_axi_rvalid && s_axi_rready) begin

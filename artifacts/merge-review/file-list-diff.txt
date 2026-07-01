@@ -1,0 +1,14 @@
+﻿
+InputObject                             SideIndicator
+-----------                             -------------
+device-tree\devicetree-axi-selftest.dtb =>           
+device-tree\devicetree-original.dtb     =>           
+device-tree\devicetree-original.dts     =>           
+device-tree\devicetree-pwm-test.dtb     =>           
+device-tree\README.md                   =>           
+docs\vivado-dtb-next-step-review.md     =>           
+.merge_backup_dir                       <=           
+.merge_branch                           <=           
+
+
+

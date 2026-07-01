@@ -1,0 +1,6 @@
+﻿ docs/cross-compile-wsl.md                |   3 +-
+ docs/github-open-source-notes.md         |   2 +-
+ docs/vivado-beginner-fpga-pwm.md         | 108 ++++++++++++++++++-------------
+ fpga/axi_buzzer_pwm/README.md            |  52 ++++++++++-----
+ fpga/axi_buzzer_pwm/rtl/axi_buzzer_pwm.v |   7 +-
+ 5 files changed, 108 insertions(+), 64 deletions(-)

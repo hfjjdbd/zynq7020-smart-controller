@@ -1,0 +1,14 @@
+# Clock Registers Read-Only Capture
+
+Status: not captured in this commit.
+
+The previous board survey found no usable `devmem` command and no exposed
+debugfs clock tree on the running Xillinux/Ubuntu 12.04 system. Reading FCLK
+registers should be done with a small `/dev/mem` read-only helper or a trusted
+devmem tool. Do not write SLCR registers.
+
+Known runtime evidence:
+
+- Current PL AXI devices are enumerated at `0x43c00000` and `0x43c10000`.
+- The framebuffer driver is active through `43c10000.logicvc`.
+- Therefore the PS-to-PL AXI path is already functional in the current boot.

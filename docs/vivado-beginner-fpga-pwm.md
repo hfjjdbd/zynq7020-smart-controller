@@ -18,16 +18,26 @@ Web page
   -> Python server
   -> tone3
   -> AXI-Lite registers
-  -> FPGA PWM
-  -> buzzer
+  -> AXI self-test first
+  -> FPGA PWM later
+  -> buzzer only after board identity/risk is accepted
 ```
 
-The FPGA block has only three software-visible registers:
+The self-test block comes first and has these registers:
+
+```text
+0x00 SCRATCH read/write
+0x04 ID      read-only 0x50574D31
+0x08 COUNTER continuously changing
+```
+
+The later PWM block has these software-visible registers:
 
 ```text
 0x00 CONTROL  bit0 enable
 0x04 PERIOD   clock cycles per waveform period
 0x08 DUTY     high-level clock cycles
+0x0C ID       read-only 0x425A5057
 ```
 
 For a 100 MHz FPGA clock and 440 Hz tone:
@@ -66,12 +76,12 @@ That is much easier to debug on Zynq.
 Use the exact part for the board:
 
 ```text
-XC7Z020-2CLG400
+xc7z020clg400-2
 ```
 
-If you already have an official MYIR/Z-turn Vivado project, use that first. It
-is safer than creating a board design from nothing because DDR, clocks, Ethernet,
-SD card, UART, and the existing PL routes are already configured.
+Do not select a MYIR V2 board preset. The exact PCB revision is not confirmed.
+The current plan keeps the working `BOOT.bin`/FSBL and only generates a new PL
+bitstream plus a matching test DTB.
 
 ### 2. Create A Block Design
 
@@ -93,7 +103,15 @@ Run:
 Run Block Automation
 ```
 
-This configures the basic PS side.
+Only enable the minimum PL path needed for AXI access:
+
+```text
+M_AXI_GP0 enabled
+FCLK_CLK0 enabled
+FCLK_RESET0_N enabled
+```
+
+Do not generate a new FSBL or replace `BOOT.bin`.
 
 ### 3. Enable AXI GP0
 
@@ -107,12 +125,12 @@ PS-PL Configuration -> AXI Non Secure Enablement -> GP Master AXI Interface -> M
 
 This lets ARM/Linux write registers inside PL.
 
-### 4. Add The PWM RTL
+### 4. Add The AXI Self-Test RTL First
 
 Add this source file to Vivado:
 
 ```text
-fpga/axi_buzzer_pwm/rtl/axi_buzzer_pwm.v
+vivado/rtl/axi_selftest.v
 ```
 
 Then choose one of these paths:
@@ -137,8 +155,8 @@ Mode: Slave
 Number of registers: 3
 ```
 
-Then replace the generated user logic with `axi_buzzer_pwm.v`, or instantiate
-`axi_buzzer_pwm` from inside the generated wrapper.
+Then replace the generated user logic with `axi_selftest.v`, or instantiate
+`axi_selftest` from inside the generated wrapper.
 
 ### 5. Connect AXI
 
@@ -147,7 +165,7 @@ In the block design:
 ```text
 ZYNQ7 M_AXI_GP0
   -> AXI Interconnect
-  -> axi_buzzer_pwm S_AXI
+  -> axi_selftest S_AXI
 ```
 
 Vivado can usually add the AXI interconnect automatically when you run:
@@ -164,7 +182,7 @@ Open:
 Address Editor
 ```
 
-Set the PWM IP base address to:
+Set the self-test IP base address to:
 
 ```text
 0x43C20000
@@ -177,30 +195,21 @@ matching value:
 TONE3_PWM_BASE=0xYOUR_ADDRESS
 ```
 
-### 7. Connect The Buzzer Output
+### 7. Do Not Connect The Buzzer Yet
 
-This is the only board-specific part.
+The first bitstream must not connect to P18 or the buzzer. It should contain
+only the Zynq PS, AXI interconnect, and the self-test AXI registers. It should
+not include the old display IP.
 
-Your running Linux device tree says the old buzzer uses GPIO 117:
+The candidate later buzzer constraint is:
 
-```text
-gpio-beep gpios = 0x75
+```tcl
+set_property PACKAGE_PIN P18 [get_ports BP]
+set_property IOSTANDARD LVCMOS33 [get_ports BP]
 ```
 
-On Zynq PS GPIO, GPIO 117 corresponds to:
-
-```text
-EMIO[63]
-```
-
-So do not guess a random package pin. The safest goal is:
-
-```text
-axi_buzzer_pwm pwm_out -> the old PL path that drove EMIO[63]/GPIO117 buzzer
-```
-
-If you use the official MYIR project, look for the existing buzzer or GPIO117
-connection and replace that signal with `pwm_out`.
+Treat that as unconfirmed until the board photos or manual risk acceptance
+settle the hardware identity.
 
 ### 8. Generate Bitstream
 
@@ -213,7 +222,7 @@ Generate Bitstream
 Export a new bitstream with a safe name:
 
 ```text
-7z020-pwm-test.bit
+7z020-axi-selftest.bit
 ```
 
 Do not overwrite the known working:
@@ -224,26 +233,37 @@ Do not overwrite the known working:
 
 ## No-JTAG Load And Test
 
-Copy the bitstream:
+Do not online-replace the whole PL from running Linux. The current Linux has
+`logicvc` framebuffer drivers bound to old PL display IP, so this is unsafe:
 
 ```sh
-cat 7z020-pwm-test.bit | ssh root@192.168.1.100 'cat > /media/boot/7z020-pwm-test.bit'
+cat new.bit > /dev/xdevcfg
 ```
 
-Load it temporarily:
+The safer no-JTAG flow is:
 
-```sh
-ssh root@192.168.1.100 'cat /media/boot/7z020-pwm-test.bit > /dev/xdevcfg'
+```text
+old BOOT.bin
+  -> U-Boot
+  -> load 7z020-axi-selftest.bit
+  -> load devicetree-axi-selftest.dtb
+  -> boot Linux
 ```
 
-Test a short tone:
+The test DTB must disable:
 
-```sh
-ssh root@192.168.1.100 'cd /root/project && TONE3_BACKEND=axi TONE3_PWM_BASE=0x43c20000 TONE3_PWM_CLK_HZ=100000000 ./tone3 440 150'
+```text
+logiclk@43c00000
+logicvc@43c10000
+gpio-beep
 ```
 
-If it does not work, reboot the board. Because this is a temporary load, reboot
-returns to the SD card boot configuration.
+Any copy to `/media/boot`, boot-item switch, or reboot requires explicit user
+confirmation first.
+
+After the self-test boot succeeds, compile and run `linux/axi_selftest.c` on the
+board. Only after scratch readback, ID `0x50574D31`, and counter movement pass
+should you generate the PWM bitstream and run a short PWM test.
 
 ## What To Ignore For Now
 
