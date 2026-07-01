@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -23,6 +24,16 @@
 #define GPIO_WAIT_RETRIES 100
 #define GPIO_WAIT_NS 10000000L
 
+#define BACKEND_SYSFS 0
+#define BACKEND_AXI 1
+
+#define DEFAULT_PWM_BASE 0x43c20000UL
+#define DEFAULT_PWM_CLOCK_HZ 100000000UL
+#define PWM_REG_CONTROL 0
+#define PWM_REG_PERIOD 1
+#define PWM_REG_DUTY 2
+#define PWM_CONTROL_ENABLE 1U
+
 /* Standard note frequencies: C1-B5, 60 notes */
 /* Index 0=rest, 1=C1, 2=C#1, ..., 13=C2, ..., 60=B5 */
 static const int NOTE_FREQ[61] = {
@@ -35,10 +46,17 @@ static const int NOTE_FREQ[61] = {
 };
 
 static volatile sig_atomic_t g_stop_requested = 0;
+static int g_backend = BACKEND_SYSFS;
 static int g_value_fd = -1;
 static long g_gpio_write_ns = 50000;
+static int g_mem_fd = -1;
+static void *g_pwm_map = NULL;
+static size_t g_pwm_map_size = 0;
+static volatile uint32_t *g_pwm_regs = NULL;
+static unsigned long g_pwm_clock_hz = DEFAULT_PWM_CLOCK_HZ;
 
 static void on_signal(int signo) { (void)signo; g_stop_requested = 1; }
+static void calibrate(void);
 
 static int write_text_file(const char *path, const char *text) {
     int fd = open(path, O_WRONLY);
@@ -59,6 +77,17 @@ static int gpio_write_value(int value) {
 }
 
 static void gpio_silence(void) { if (g_value_fd >= 0) gpio_write_value(0); }
+
+static void axi_write_reg(int reg, uint32_t value) {
+    if (g_pwm_regs) g_pwm_regs[reg] = value;
+}
+
+static void axi_silence(void) { axi_write_reg(PWM_REG_CONTROL, 0); }
+
+static void silence_output(void) {
+    if (g_backend == BACKEND_AXI) axi_silence();
+    else gpio_silence();
+}
 
 static int wait_for_path(const char *path) {
     struct timespec d = { .tv_sec = 0, .tv_nsec = GPIO_WAIT_NS };
@@ -88,6 +117,82 @@ static int setup_gpio(void) {
     g_value_fd = open(GPIO_VALUE, O_WRONLY);
     if (g_value_fd < 0) { perror("open value"); return -1; }
     gpio_write_value(0);
+    return 0;
+}
+
+static int parse_ulong_env(const char *name, unsigned long def, unsigned long *out) {
+    const char *text = getenv(name);
+    char *end;
+    unsigned long value;
+    if (!text || !*text) {
+        *out = def;
+        return 0;
+    }
+    errno = 0;
+    value = strtoul(text, &end, 0);
+    if (errno || end == text || *end) {
+        fprintf(stderr, "invalid %s: %s\n", name, text);
+        return -1;
+    }
+    *out = value;
+    return 0;
+}
+
+static int setup_axi(void) {
+    unsigned long base;
+    unsigned long page_size;
+    long page_size_value;
+    unsigned long page_base;
+    unsigned long page_offset;
+
+    if (parse_ulong_env("TONE3_PWM_BASE", DEFAULT_PWM_BASE, &base) < 0) return -1;
+    if (parse_ulong_env("TONE3_PWM_CLK_HZ", DEFAULT_PWM_CLOCK_HZ, &g_pwm_clock_hz) < 0) return -1;
+    if (g_pwm_clock_hz == 0) {
+        fprintf(stderr, "invalid TONE3_PWM_CLK_HZ: 0\n");
+        return -1;
+    }
+
+    page_size_value = sysconf(_SC_PAGESIZE);
+    if (page_size_value <= 0) {
+        perror("sysconf page size");
+        return -1;
+    }
+    page_size = (unsigned long)page_size_value;
+    page_base = base & ~(page_size - 1);
+    page_offset = base - page_base;
+    g_pwm_map_size = page_offset + page_size;
+
+    g_mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
+    if (g_mem_fd < 0) { perror("open /dev/mem"); return -1; }
+
+    g_pwm_map = mmap(NULL, g_pwm_map_size, PROT_READ | PROT_WRITE, MAP_SHARED, g_mem_fd, (off_t)page_base);
+    if (g_pwm_map == MAP_FAILED) {
+        g_pwm_map = NULL;
+        perror("mmap pwm");
+        close(g_mem_fd);
+        g_mem_fd = -1;
+        return -1;
+    }
+
+    g_pwm_regs = (volatile uint32_t *)((char *)g_pwm_map + page_offset);
+    axi_silence();
+    fprintf(stderr, "AXI PWM base: 0x%lx, clock: %lu Hz\n", base, g_pwm_clock_hz);
+    return 0;
+}
+
+static int setup_backend(void) {
+    const char *backend = getenv("TONE3_BACKEND");
+    if (backend && !strcmp(backend, "axi")) {
+        g_backend = BACKEND_AXI;
+        return setup_axi();
+    }
+    if (backend && *backend && strcmp(backend, "sysfs")) {
+        fprintf(stderr, "unknown TONE3_BACKEND: %s\n", backend);
+        return -1;
+    }
+    g_backend = BACKEND_SYSFS;
+    if (setup_gpio() < 0) return -1;
+    calibrate();
     return 0;
 }
 
@@ -124,9 +229,7 @@ static int sleep_ms(int ms) {
     return sleep_until(&dl);
 }
 
-static int play_tone(int freq, int duration_ms) {
-    if (freq < 0 || freq > MAX_FREQ_HZ) { fprintf(stderr, "invalid freq: %d\n", freq); return -1; }
-    if (duration_ms < 1 || duration_ms > MAX_DURATION_MS) { fprintf(stderr, "invalid dur: %d\n", duration_ms); return -1; }
+static int play_tone_sysfs(int freq, int duration_ms) {
     if (freq == 0) { gpio_silence(); return sleep_ms(duration_ms); }
 
     int64_t half_ns = 1000000000LL / ((int64_t)freq * 2LL);
@@ -148,6 +251,36 @@ static int play_tone(int freq, int duration_ms) {
 
     gpio_silence();
     return 0;
+}
+
+static int play_tone_axi(int freq, int duration_ms) {
+    unsigned long period;
+    unsigned long duty;
+    if (freq == 0) {
+        axi_silence();
+        return sleep_ms(duration_ms);
+    }
+
+    period = g_pwm_clock_hz / (unsigned long)freq;
+    if (period < 2 || period > 0xffffffffUL) {
+        fprintf(stderr, "freq out of range for AXI clock: %d\n", freq);
+        return -1;
+    }
+    duty = period / 2;
+
+    axi_write_reg(PWM_REG_PERIOD, (uint32_t)period);
+    axi_write_reg(PWM_REG_DUTY, (uint32_t)duty);
+    axi_write_reg(PWM_REG_CONTROL, PWM_CONTROL_ENABLE);
+    sleep_ms(duration_ms);
+    axi_silence();
+    return 0;
+}
+
+static int play_tone(int freq, int duration_ms) {
+    if (freq < 0 || freq > MAX_FREQ_HZ) { fprintf(stderr, "invalid freq: %d\n", freq); return -1; }
+    if (duration_ms < 1 || duration_ms > MAX_DURATION_MS) { fprintf(stderr, "invalid dur: %d\n", duration_ms); return -1; }
+    if (g_backend == BACKEND_AXI) return play_tone_axi(freq, duration_ms);
+    return play_tone_sysfs(freq, duration_ms);
 }
 
 /* Map note name string to frequency using lookup table */
@@ -187,7 +320,7 @@ static int play_song(const char *path) {
         n++;
     }
     if (ferror(f)) st = -1;
-    fclose(f); gpio_silence();
+    fclose(f); silence_output();
     fprintf(stdout, "song: %lu notes%s\n", n, g_stop_requested ? " (stopped)" : "");
     return st;
 }
@@ -211,7 +344,7 @@ static void play_scale(void) {
     for (int i = 0; i < 8; i++) {
         fprintf(stderr, "  %s (%d Hz)\n", names[i], notes[i]);
         play_tone(notes[i], 500);
-        if (!g_stop_requested) usleep(100000);
+        if (!g_stop_requested) sleep_ms(100);
     }
     fprintf(stderr, "Done.\n");
 }
@@ -221,12 +354,11 @@ int main(int argc, char **argv) {
     sa.sa_handler = on_signal; sigemptyset(&sa.sa_mask);
     sigaction(SIGINT, &sa, NULL); sigaction(SIGTERM, &sa, NULL); sigaction(SIGHUP, &sa, NULL);
 
-    if (setup_gpio() < 0) return 1;
-    calibrate();
+    if (setup_backend() < 0) return 1;
 
     int st = 0;
     if (argc == 2 && !strcmp(argv[1], "stop")) {
-        gpio_silence();
+        silence_output();
     } else if (argc == 2 && !strcmp(argv[1], "scale")) {
         play_scale();
     } else if (argc == 3 && !strcmp(argv[1], "song")) {
@@ -243,7 +375,9 @@ int main(int argc, char **argv) {
     } else { usage(argv[0]); st = 1; }
 
 end:
-    gpio_silence();
+    silence_output();
     if (g_value_fd >= 0) { close(g_value_fd); g_value_fd = -1; }
+    if (g_pwm_map) { munmap(g_pwm_map, g_pwm_map_size); g_pwm_map = NULL; }
+    if (g_mem_fd >= 0) { close(g_mem_fd); g_mem_fd = -1; }
     return st;
 }

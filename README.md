@@ -75,12 +75,33 @@ ssh root@192.168.1.100
 ## 旋律提取
 
 ```bash
-# 從 MIDI 提取
+# 從 MIDI 精確提取（推薦）
 python3 extract_notes.py song.mid --text-output song.txt
 
-# 從音頻提取（精度較低）
+# 從單旋律音頻估計（精度較低）
 python3 extract_notes.py audio.mp3 --text-output song.txt
 ```
+
+MIDI 轉換會直接讀取音符和時長；MP3/WAV/AAC 只能從聲音中估計旋律。
+完整流程與調參見 `docs/melody-conversion.md`。
+
+常用 MIDI 優化：
+
+```bash
+# 查看 MIDI 軌道，找到主旋律
+python3 extract_notes.py song.mid --list-midi-tracks
+
+# 自動選擇可能的主旋律軌道（默認）
+python3 extract_notes.py song.mid --text-output song.txt
+
+# 或只轉換指定主旋律軌道
+python3 extract_notes.py song.mid --midi-track 2 --text-output song.txt
+
+# 強制合併所有非鼓軌道，按最高音/最低音壓成單音
+python3 extract_notes.py song.mid --midi-track all --midi-note-policy highest --text-output song.txt
+```
+
+GitHub 開源項目調研筆記見 `docs/github-open-source-notes.md`。
 
 ## 部署
 
@@ -93,6 +114,12 @@ cat song.txt | ssh root@192.168.1.100 'cat > /root/project/song.txt'
 
 # 在開發板編譯 tone3
 ssh root@192.168.1.100 'cd /root/project && gcc -std=gnu99 -Wall -O2 -o tone3 tone3.c -lrt'
+
+# 在 PC/WSL 交叉編譯 tone3（推薦，目標為 armhf）
+make cross-armhf
+
+# WSL 工具鏈安裝與安全部署說明
+# 見 docs/cross-compile-wsl.md
 
 # 重啟服務
 ssh root@192.168.1.100 '/etc/init.d/zynq-controller restart'

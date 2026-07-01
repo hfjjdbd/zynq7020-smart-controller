@@ -29,11 +29,13 @@ LED_MAP = {
 
 MAX_FREQUENCY = 2000
 MAX_TONE_DURATION_MS = 60000
-MAX_SONG_DURATION_SEC = 120
+MAX_SONG_DURATION_SEC = 600
+SONG_WATCHDOG_GRACE_SEC = 30
 
 process_lock = threading.RLock()
 tone_process = None
 tone_start_time = 0
+tone_timeout_sec = MAX_SONG_DURATION_SEC
 
 
 def json_bytes(payload):
@@ -72,6 +74,38 @@ def _wait_with_timeout(process, timeout_sec):
             return False
         time.sleep(0.05)
     return True
+
+
+def song_duration_sec(path):
+    total_ms = 0
+    with open(path, "r") as f:
+        for line in f:
+            text = line.strip()
+            if not text or text.startswith("#"):
+                continue
+            parts = text.split()
+            if len(parts) < 2:
+                continue
+            try:
+                duration_ms = int(parts[1])
+            except ValueError:
+                continue
+            if duration_ms > 0:
+                total_ms += duration_ms
+    return total_ms / 1000.0
+
+
+def song_timeout_sec(path):
+    try:
+        duration_sec = song_duration_sec(path)
+    except IOError:
+        return MAX_SONG_DURATION_SEC
+    timeout_sec = int(duration_sec + SONG_WATCHDOG_GRACE_SEC + 0.999)
+    if timeout_sec < SONG_WATCHDOG_GRACE_SEC:
+        timeout_sec = SONG_WATCHDOG_GRACE_SEC
+    if timeout_sec > MAX_SONG_DURATION_SEC:
+        timeout_sec = MAX_SONG_DURATION_SEC
+    return timeout_sec
 
 
 def stop_tone_locked():
@@ -119,7 +153,9 @@ def stop_tone():
 def reap_process(process):
     global tone_process
     try:
-        _wait_with_timeout(process, MAX_SONG_DURATION_SEC)
+        with process_lock:
+            timeout_sec = tone_timeout_sec
+        _wait_with_timeout(process, timeout_sec)
         if process.poll() is None:
             try:
                 process.kill()
@@ -131,8 +167,8 @@ def reap_process(process):
                 tone_process = None
 
 
-def start_process(args):
-    global tone_process, tone_start_time
+def start_process(args, timeout_sec):
+    global tone_process, tone_start_time, tone_timeout_sec
 
     with process_lock:
         stop_tone_locked()
@@ -148,6 +184,7 @@ def start_process(args):
 
         tone_process = process
         tone_start_time = time.time()
+        tone_timeout_sec = timeout_sec
 
         thread = threading.Thread(
             target=reap_process,
@@ -161,13 +198,14 @@ def start_process(args):
 
 def start_tone(freq, duration_ms):
     if not 0 <= freq <= MAX_FREQUENCY:
-        raise ValueError("Frequency must be 0-5000 Hz")
+        raise ValueError("Frequency must be 0-%d Hz" % MAX_FREQUENCY)
     if not 10 <= duration_ms <= MAX_TONE_DURATION_MS:
-        raise ValueError("Duration must be 10-1000 ms")
+        raise ValueError("Duration must be 10-%d ms" % MAX_TONE_DURATION_MS)
     if not os.path.isfile(TONE_BINARY):
         raise RuntimeError("tone3 binary not found")
 
-    return start_process([TONE_BINARY, str(freq), str(duration_ms)])
+    timeout_sec = int((duration_ms + 999) / 1000.0) + SONG_WATCHDOG_GRACE_SEC
+    return start_process([TONE_BINARY, str(freq), str(duration_ms)], timeout_sec)
 
 
 def start_song():
@@ -176,7 +214,7 @@ def start_song():
     if not os.path.isfile(SONG_FILE):
         raise RuntimeError("song.txt not found")
 
-    return start_process([TONE_BINARY, "song", SONG_FILE])
+    return start_process([TONE_BINARY, "song", SONG_FILE], song_timeout_sec(SONG_FILE))
 
 
 def playback_state():
@@ -384,7 +422,7 @@ def watchdog_loop():
             process = tone_process
             if process is not None and process.poll() is None:
                 elapsed = time.time() - tone_start_time
-                if elapsed > MAX_SONG_DURATION_SEC:
+                if elapsed > tone_timeout_sec:
                     sys.stdout.write(
                         "watchdog: killing stuck process (pid=%d, elapsed=%.0fs)\n"
                         % (process.pid, elapsed)
