@@ -46,6 +46,10 @@ def quantize_frequency(freq: float) -> tuple[int, str]:
     return quantized, midi_to_name(midi)
 
 
+def note_to_rounded_hz(note: str) -> int:
+    return int(round(librosa.note_to_hz(note)))
+
+
 def merge_adjacent(events: list[Event]) -> list[Event]:
     merged: list[Event] = []
 
@@ -112,6 +116,36 @@ def absorb_short_events(
         index += 1
 
     return merge_adjacent(result)
+
+
+def fit_buzzer_range(
+    events: list[Event],
+    min_hz: int,
+    max_hz: int,
+) -> list[Event]:
+    fitted: list[Event] = []
+
+    for event in events:
+        if event.rest or event.freq <= 0:
+            fitted.append(event)
+            continue
+
+        freq = event.freq
+        while freq < min_hz:
+            freq *= 2
+        while freq > max_hz:
+            freq = int(round(freq / 2))
+
+        fitted.append(
+            Event(
+                freq=freq,
+                dur=event.dur,
+                note=quantize_frequency(freq)[1],
+                rest=False,
+            )
+        )
+
+    return merge_adjacent(fitted)
 
 
 def extract_events(
@@ -263,8 +297,10 @@ def main() -> None:
     parser.add_argument(
         "--minimum-event-ms",
         type=int,
-        default=80,
+        default=90,
     )
+    parser.add_argument("--buzzer-min-note", default="A3")
+    parser.add_argument("--buzzer-max-note", default="D6")
     parser.add_argument("--duration", type=float)
     args = parser.parse_args()
 
@@ -291,6 +327,12 @@ def main() -> None:
         median_size=args.median_size,
         minimum_event_ms=args.minimum_event_ms,
         duration=args.duration,
+    )
+
+    events = fit_buzzer_range(
+        events,
+        min_hz=note_to_rounded_hz(args.buzzer_min_note),
+        max_hz=note_to_rounded_hz(args.buzzer_max_note),
     )
 
     args.json_output.write_text(
@@ -337,6 +379,10 @@ def main() -> None:
         print(
             f"Frequency range: "
             f"{min(frequencies)}-{max(frequencies)} Hz"
+        )
+        print(
+            "Buzzer range: "
+            f"{args.buzzer_min_note}-{args.buzzer_max_note}"
         )
 
 

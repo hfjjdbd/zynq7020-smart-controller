@@ -89,7 +89,7 @@
   </style>
 </head>
 <body>
-  <button class="theme-toggle" onclick="toggleTheme()">☀️</button>
+  <button class="theme-toggle" onclick="toggleTheme()">Light</button>
 
   <div class="container">
     <h1 style="text-align:center; font-size:36px; font-weight:700; margin-bottom:8px">ZYNQ7020</h1>
@@ -110,15 +110,17 @@
       <h2 style="font-size:22px; font-weight:600; margin-bottom:20px">Buzzer</h2>
       <div id="note-buttons" style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:20px"></div>
       <div style="display:flex; gap:12px">
-        <button id="btn-play" class="btn btn-primary" onclick="playSong()">▶ Play Music</button>
-        <button id="btn-stop" class="btn btn-danger" onclick="stopSong()">■ Stop</button>
+        <button id="btn-play" class="btn btn-primary" onclick="playSong()">Play Music</button>
+        <button id="btn-stop" class="btn btn-danger" onclick="stopSong()" disabled>Stop</button>
       </div>
-      <p id="playing-status" class="playing" style="display:none">● Playing...</p>
+      <p id="playing-status" class="playing" style="display:none">Playing...</p>
     </div>
   </div>
 
   <script>
-    const BOARD = 'http://192.168.1.100:8080';
+    const API_BASE = window.location.protocol === 'file:'
+      ? 'http://192.168.1.100:8080'
+      : '';
 
     const LEDS = [
       { name: 'usr_led1', label: 'LED1', color: '#30d158' },
@@ -144,14 +146,17 @@
     let busy = '';
     let playing = false;
     let ledStates = {};
-    let healthTimer = null;
+    let stateTimer = null;
 
     // --- API helpers ---
 
     async function api(method, path, body) {
-      const opts = { method, headers: { 'Content-Type': 'application/json' } };
-      if (body) opts.body = JSON.stringify(body);
-      const res = await fetch(BOARD + path, opts);
+      const opts = { method };
+      if (body) {
+        opts.headers = { 'Content-Type': 'application/json' };
+        opts.body = JSON.stringify(body);
+      }
+      const res = await fetch(API_BASE + path, opts);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'HTTP ' + res.status);
       return data;
@@ -165,16 +170,27 @@
 
     // --- Health check ---
 
-    async function checkHealth() {
+    async function refreshState() {
       try {
-        await api('GET', '/health');
+        const data = await api('GET', '/state');
         connected = true;
+        applyState(data);
         showError('');
       } catch (e) {
         connected = false;
         showError(e.message || 'Board is unavailable');
       }
       renderStatus();
+      renderControls();
+    }
+
+    function applyState(data) {
+      if (data.leds) {
+        LEDS.forEach(led => {
+          ledStates[led.name] = data.leds[led.name] === 1;
+        });
+      }
+      playing = !!data.playing;
     }
 
     function renderStatus() {
@@ -183,10 +199,10 @@
         el.textContent = 'Checking...';
         el.style.color = 'var(--text-secondary)';
       } else if (connected) {
-        el.textContent = '● Connected';
+        el.textContent = 'Connected';
         el.style.color = '#30d158';
       } else {
-        el.textContent = '● Disconnected';
+        el.textContent = 'Disconnected';
         el.style.color = '#ff453a';
       }
     }
@@ -198,7 +214,7 @@
       const current = html.getAttribute('data-theme');
       const next = current === 'dark' ? 'light' : 'dark';
       html.setAttribute('data-theme', next);
-      document.querySelector('.theme-toggle').textContent = next === 'dark' ? '☀️' : '🌙';
+      document.querySelector('.theme-toggle').textContent = next === 'dark' ? 'Light' : 'Dark';
     }
 
     // --- LED ---
@@ -208,7 +224,7 @@
       ledStates[name] = (value === 1);
       busy = 'led:' + name;
       showError('');
-      renderLEDs();
+      renderControls();
 
       try {
         await api('POST', '/led', { name, value });
@@ -217,7 +233,7 @@
         showError(e.message || 'LED operation failed');
       } finally {
         busy = '';
-        renderLEDs();
+        renderControls();
       }
     }
 
@@ -226,7 +242,7 @@
       grid.innerHTML = LEDS.map(led => {
         const on = ledStates[led.name];
         const bg = on ? led.color : 'var(--border)';
-        const disabled = busy ? 'disabled' : '';
+        const disabled = (busy || connected !== true) ? 'disabled' : '';
         return '<div class="card" style="text-align:center; padding:20px">' +
           '<div style="font-size:14px; font-weight:500; margin-bottom:12px">' + led.label + '</div>' +
           '<div class="dot' + (on ? ' on' : '') + '" style="background:' + bg + '; color:' + led.color + '"></div>' +
@@ -242,20 +258,21 @@
     async function playNote(freq) {
       busy = 'note';
       showError('');
+      renderControls();
       try {
         await api('POST', '/buzzer', { freq, duration: 300 });
       } catch (e) {
         showError(e.message || 'Buzzer request failed');
       } finally {
         busy = '';
-        renderNoteButtons();
+        renderControls();
       }
     }
 
     function renderNoteButtons() {
       const el = document.getElementById('note-buttons');
       el.innerHTML = NOTES.map(n =>
-        '<button class="btn note-btn" ' + (busy ? 'disabled' : '') +
+        '<button class="btn note-btn" ' + ((busy || connected !== true) ? 'disabled' : '') +
         ' onclick="playNote(' + n.freq + ')">' + n.label + '</button>'
       ).join('');
     }
@@ -264,46 +281,54 @@
 
     async function playSong() {
       busy = 'song';
-      playing = true;
       showError('');
-      document.getElementById('btn-play').disabled = true;
-      document.getElementById('btn-stop').disabled = false;
-      document.getElementById('playing-status').style.display = 'block';
+      renderControls();
 
       try {
         await api('POST', '/play_song');
+        playing = true;
       } catch (e) {
         playing = false;
         showError(e.message || 'Play request failed');
-        document.getElementById('playing-status').style.display = 'none';
       } finally {
         busy = '';
-        renderNoteButtons();
+        renderControls();
       }
     }
 
     async function stopSong() {
       busy = 'stop';
       showError('');
+      renderControls();
       try {
         await api('POST', '/stop_song');
         playing = false;
-        document.getElementById('playing-status').style.display = 'none';
       } catch (e) {
         showError(e.message || 'Stop request failed');
       } finally {
         busy = '';
-        document.getElementById('btn-play').disabled = false;
-        renderNoteButtons();
+        renderControls();
       }
+    }
+
+    function renderPlaybackControls() {
+      const unavailable = !!busy || connected !== true;
+      document.getElementById('btn-play').disabled = unavailable || playing;
+      document.getElementById('btn-stop').disabled = unavailable || !playing;
+      document.getElementById('playing-status').style.display = playing ? 'block' : 'none';
+    }
+
+    function renderControls() {
+      renderLEDs();
+      renderNoteButtons();
+      renderPlaybackControls();
     }
 
     // --- Init ---
 
-    renderLEDs();
-    renderNoteButtons();
-    checkHealth();
-    healthTimer = setInterval(checkHealth, 5000);
+    renderControls();
+    refreshState();
+    stateTimer = setInterval(refreshState, 5000);
   </script>
 </body>
 </html>

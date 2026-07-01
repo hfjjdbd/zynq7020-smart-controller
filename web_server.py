@@ -5,6 +5,7 @@ from __future__ import print_function
 import json
 import os
 import signal
+import SocketServer
 import subprocess
 import sys
 import threading
@@ -28,6 +29,7 @@ LED_MAP = {
 }
 
 MAX_FREQUENCY = 2000
+MIN_TONE_DURATION_MS = 10
 MAX_TONE_DURATION_MS = 60000
 MAX_SONG_DURATION_SEC = 120
 
@@ -161,9 +163,11 @@ def start_process(args):
 
 def start_tone(freq, duration_ms):
     if not 0 <= freq <= MAX_FREQUENCY:
-        raise ValueError("Frequency must be 0-5000 Hz")
-    if not 10 <= duration_ms <= MAX_TONE_DURATION_MS:
-        raise ValueError("Duration must be 10-1000 ms")
+        raise ValueError("Frequency must be 0-%d Hz" % MAX_FREQUENCY)
+    if not MIN_TONE_DURATION_MS <= duration_ms <= MAX_TONE_DURATION_MS:
+        raise ValueError(
+            "Duration must be %d-%d ms" % (MIN_TONE_DURATION_MS, MAX_TONE_DURATION_MS)
+        )
     if not os.path.isfile(TONE_BINARY):
         raise RuntimeError("tone3 binary not found")
 
@@ -216,6 +220,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_no_content(self):
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
     def parse_body(self):
         content_length = self.headers.get("Content-Length", "0")
         try:
@@ -245,7 +258,7 @@ class Handler(BaseHTTPRequestHandler):
         return urlparse(self.path).path
 
     def do_OPTIONS(self):
-        self.send_json(204, {})
+        self.send_no_content()
 
     def do_GET(self):
         try:
@@ -372,6 +385,11 @@ class Handler(BaseHTTPRequestHandler):
         sys.stdout.flush()
 
 
+class ThreadedHTTPServer(SocketServer.ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 def handle_shutdown(signum, frame):
     stop_tone()
     raise KeyboardInterrupt
@@ -412,8 +430,7 @@ def main():
     watchdog.daemon = True
     watchdog.start()
 
-    server = HTTPServer((HOST, PORT), Handler)
-    server.daemon_threads = True
+    server = ThreadedHTTPServer((HOST, PORT), Handler)
 
     print("Listening on http://%s:%d" % (HOST, PORT))
 

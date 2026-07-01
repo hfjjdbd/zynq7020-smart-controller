@@ -3,11 +3,13 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -22,6 +24,8 @@
 #define MAX_DURATION_MS 60000
 #define GPIO_WAIT_RETRIES 100
 #define GPIO_WAIT_NS 10000000L
+#define PRECISE_SPIN_NS 80000L
+#define LATE_RESET_NS 250000L
 
 /* Standard note frequencies: C1-B5, 60 notes */
 /* Index 0=rest, 1=C1, 2=C#1, ..., 13=C2, ..., 60=B5 */
@@ -106,6 +110,7 @@ static struct timespec ts_add_ns(struct timespec v, int64_t ns) {
     v.tv_sec += ns / 1000000000LL;
     v.tv_nsec += ns % 1000000000LL;
     if (v.tv_nsec >= 1000000000L) { v.tv_sec++; v.tv_nsec -= 1000000000L; }
+    if (v.tv_nsec < 0) { v.tv_sec--; v.tv_nsec += 1000000000L; }
     return v;
 }
 
@@ -117,11 +122,49 @@ static int sleep_until(const struct timespec *dl) {
     return 0;
 }
 
+static int64_t ts_diff_ns(const struct timespec *a, const struct timespec *b) {
+    return ((int64_t)a->tv_sec - (int64_t)b->tv_sec) * 1000000000LL
+        + ((int64_t)a->tv_nsec - (int64_t)b->tv_nsec);
+}
+
+static int sleep_precise_until(const struct timespec *target, long spin_ns) {
+    struct timespec now;
+
+    if (spin_ns > 0) {
+        struct timespec sleep_target = ts_add_ns(*target, -spin_ns);
+        if (sleep_until(&sleep_target) < 0) return -1;
+    }
+
+    do {
+        if (clock_gettime(CLOCK_MONOTONIC, &now) < 0) return -1;
+    } while (!g_stop_requested && ts_diff_ns(target, &now) > 0);
+
+    return 0;
+}
+
 static int sleep_ms(int ms) {
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now) < 0) return -1;
     struct timespec dl = ts_add_ns(now, (int64_t)ms * 1000000LL);
     return sleep_until(&dl);
+}
+
+static void enter_realtime_mode(void) {
+    struct sched_param param;
+    int max_priority;
+
+    memset(&param, 0, sizeof(param));
+    max_priority = sched_get_priority_max(SCHED_FIFO);
+    if (max_priority > 0) {
+        param.sched_priority = max_priority > 20 ? max_priority - 20 : max_priority;
+        if (sched_setscheduler(0, SCHED_FIFO, &param) < 0) {
+            perror("warning: realtime scheduler");
+        }
+    }
+
+    if (mlockall(MCL_CURRENT | MCL_FUTURE) < 0) {
+        perror("warning: mlockall");
+    }
 }
 
 static int play_tone(int freq, int duration_ms) {
@@ -132,18 +175,27 @@ static int play_tone(int freq, int duration_ms) {
     int64_t half_ns = 1000000000LL / ((int64_t)freq * 2LL);
     int64_t total_ns = (int64_t)duration_ms * 1000000LL;
     int64_t elapsed = 0;
+    long spin_ns = PRECISE_SPIN_NS;
     int level = 0;
 
     struct timespec deadline;
     if (clock_gettime(CLOCK_MONOTONIC, &deadline) < 0) return -1;
 
+    if (half_ns < spin_ns * 3) spin_ns = (long)(half_ns / 4);
+
     while (!g_stop_requested && elapsed < total_ns) {
         level = !level;
-        gpio_write_value(level);
+        if (gpio_write_value(level) < 0) return -1;
         elapsed += half_ns;
         deadline = ts_add_ns(deadline, half_ns);
-        if (half_ns > g_gpio_write_ns * 3)
-            sleep_until(&deadline);
+        if (half_ns > g_gpio_write_ns * 3) {
+            if (sleep_precise_until(&deadline, spin_ns) < 0) return -1;
+            struct timespec now;
+            if (clock_gettime(CLOCK_MONOTONIC, &now) == 0
+                && ts_diff_ns(&now, &deadline) > LATE_RESET_NS) {
+                deadline = now;
+            }
+        }
     }
 
     gpio_silence();
@@ -211,7 +263,7 @@ static void play_scale(void) {
     for (int i = 0; i < 8; i++) {
         fprintf(stderr, "  %s (%d Hz)\n", names[i], notes[i]);
         play_tone(notes[i], 500);
-        if (!g_stop_requested) usleep(100000);
+        if (!g_stop_requested) sleep_ms(100);
     }
     fprintf(stderr, "Done.\n");
 }
@@ -222,6 +274,7 @@ int main(int argc, char **argv) {
     sigaction(SIGINT, &sa, NULL); sigaction(SIGTERM, &sa, NULL); sigaction(SIGHUP, &sa, NULL);
 
     if (setup_gpio() < 0) return 1;
+    enter_realtime_mode();
     calibrate();
 
     int st = 0;
